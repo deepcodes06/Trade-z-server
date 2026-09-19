@@ -1,0 +1,114 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum TransactionType {
+  BUY
+  SELL
+}
+
+model User {
+  id           String   @id @default(cuid())
+  name         String
+  email        String   @unique
+  password     String
+  phone        String?
+
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  watchlists   Watchlist[]
+  portfolios   Portfolio[]
+  transactions Transaction[]
+  refreshToken RefreshToken?
+}
+
+model Watchlist {
+  id        String           @id @default(cuid())
+
+  name      String           @default("My Watchlist")
+
+  userId    String
+  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  items     WatchlistItem[]
+
+  createdAt DateTime         @default(now())
+  updatedAt DateTime         @updatedAt
+
+  @@unique([userId, name])
+}
+
+model WatchlistItem {
+  id          String     @id @default(cuid())
+
+  watchlistId String
+  watchlist   Watchlist  @relation(fields: [watchlistId], references: [id], onDelete: Cascade)
+
+  symbol      String
+  company     String?
+
+  createdAt   DateTime   @default(now())
+
+  @@unique([watchlistId, symbol])
+}
+
+model Portfolio {
+  id          String   @id @default(cuid())
+
+  symbol      String
+  company     String?
+
+  quantity    Int
+
+  avgPrice    Float
+
+  invested    Float
+
+  createdAt   DateTime @default(now())
+
+  updatedAt   DateTime @updatedAt
+
+  userId      String
+  user        User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, symbol])
+}
+
+model Transaction {
+  id          String   @id @default(cuid())
+
+  symbol      String
+  company     String?
+
+  quantity    Int
+
+  price       Float
+
+  total       Float
+
+  type        TransactionType
+
+  createdAt   DateTime @default(now())
+
+  userId      String
+  user        User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model RefreshToken {
+  id          String   @id @default(cuid())
+
+  token       String   @unique
+
+  createdAt   DateTime @default(now())
+
+  expiresAt   DateTime
+
+  userId      String   @unique
+  user        User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}

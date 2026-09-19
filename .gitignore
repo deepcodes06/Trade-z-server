@@ -1,0 +1,9 @@
+node_modules/
+.env
+logs/
+prisma/migrations/
+*.log
+src.zip
+server.err.log
+server.out.log
+.DS_Store
