@@ -38,6 +38,29 @@ function gauss(rng) {
   return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
 }
 
+// Clamp a bar's prices into a given [low, high] session range, keeping
+// open/high/low/close internally consistent.
+function _clampBar(b, { high, low }) {
+  if (high == null && low == null) return b;
+  let open = b.open;
+  let close = b.close;
+  let hi = b.high;
+  let lo = b.low;
+  if (high != null) {
+    open = Math.min(open, high);
+    close = Math.min(close, high);
+    hi = Math.min(hi, high);
+  }
+  if (low != null) {
+    open = Math.max(open, low);
+    close = Math.max(close, low);
+    lo = Math.max(lo, low);
+  }
+  hi = Math.max(hi, open, close);
+  lo = Math.min(lo, open, close);
+  return { ...b, open: round2(open), high: round2(hi), low: round2(lo), close: round2(close) };
+}
+
 // Build a historical candle series using a geometric random walk anchored at
 // `previousClose`, walking back in time, then reversing. Volatility is per-bar
 // (sigma) and the bar volume scales with the bar's volatility.
@@ -59,10 +82,12 @@ function buildSeries({ count, sigma, previousClose, endTime, intervalMin, avgVol
     series.push({ datetime: t.toISOString(), open: round2(open), high, low, close, volume });
     price = close;
   }
-  // Re-anchor the first bar's close to previousClose so the series terminates
-  // there (matches the live quote exactly at the end of the window).
+  // Scale the whole series so the LAST bar terminates exactly at
+  // previousClose (the settled reference). For '1m' the simulator then
+  // replaces the final close with the live currentPrice, so the chart trails
+  // the realtime tick from an accurate base instead of a drifted walk end.
   if (series.length) {
-    const drift = previousClose / series[0].close;
+    const drift = previousClose / series[series.length - 1].close;
     for (const b of series) {
       b.open = round2(b.open * drift);
       b.high = round2(b.high * drift);
@@ -78,22 +103,28 @@ function buildCandlesForStock(stock) {
   const symbolSeed = [...stock.symbol].reduce((acc, ch) => (acc * 31 + ch.charCodeAt(0)) >>> 0, 7);
   const rng = mulberry32(symbolSeed ^ 0x9e3779b9);
 
-  // 1 trading day = ~375 one-minute bars (Indian market 09:15–15:30 IST).
+  // 1 trading day = ~375 one-minute bars (Indian market 09:00–15:30 IST = 390
+  // minutes, hour break excluded).
   const dailyVol = Math.max(0.008, Math.min(0.04, 0.012 + stock.beta * 0.01));
   const sixMonthVol = Math.max(0.01, Math.min(0.06, 0.018 + stock.beta * 0.012));
 
   const endOfDay = new Date();
-  endOfDay.setUTCHours(15, 30, 0, 0); // anchor end of intraday window
+  endOfDay.setUTCHours(10, 0, 0, 0); // anchor intraday window end at 15:30 IST (UTC+5:30)
+
+  // Clamp the intraday walk inside the day's real session range so the chart
+  // never shows ticks above dayHigh / below dayLow (the live simulator keeps
+  // currentPrice within this band too).
+  const clamp = { high: stock.dayHigh, low: stock.dayLow };
 
   const intraday = buildSeries({
     count: 375,
-    sigma: dailyVol * 0.25,
+    sigma: dailyVol / Math.sqrt(375),
     previousClose: stock.previousClose,
     endTime: endOfDay,
     intervalMin: 1,
     avgVolume: Math.max(100, stock.avgVolume / 375),
     rng,
-  });
+  }).map((b) => _clampBar(b, clamp));
 
   // 6m: daily bars over 126 trading days.
   const sixMonth = buildSeries({

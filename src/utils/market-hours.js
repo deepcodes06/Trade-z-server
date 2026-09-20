@@ -3,13 +3,13 @@
 // -----------------------------------------------------------------------------
 // NSE market-hours awareness (IST, UTC+5:30, no DST).
 //   - Weekdays Mon-Fri
-//   - Trading window 09:15 - 15:30 IST
+//   - Trading window 09:00 - 15:30 IST
 // Used by the simulator to freeze prices when the market is closed and by the
 // dashboard/SSE to report market status to the app.
 // =============================================================================
 
 const IST_OFFSET_MS = (5 * 60 + 30) * 60 * 1000; // +05:30
-const OPEN_MS = (9 * 60 + 15) * 60 * 1000; // 09:15 IST
+const OPEN_MS = (9 * 60 + 0) * 60 * 1000; // 09:00 IST
 const CLOSE_MS = (15 * 60 + 30) * 60 * 1000; // 15:30 IST
 
 function marketInfo(now = new Date()) {
