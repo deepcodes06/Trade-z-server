@@ -128,11 +128,52 @@ class Simulator extends EventEmitter {
   start() {
     if (this._timer) return;
     this._timer = setInterval(() => this._tick(), this.tickMs);
-    // Fetch live prices immediately, then every minute.
-    this._refreshLive().catch(() => {});
+    // Boot-time live seed: pull real quotes FIRST, ungated by market hours, so
+    // weekends/holidays/pre-open all show the actual settled close (and the
+    // candle series is re-anchored to the real previousClose). This fixes
+    // cases where the app served the stale catalog price 1313.8 instead of the
+    // real 1243.9 for RELIANCE.
+    this._seedFromLiveOnce().catch(() => {});
+    // Then refresh live prices every minute (market-hours gated for ticks).
     this._liveTimer = setInterval(() => {
       this._refreshLive().catch(() => {});
     }, LIVE_REFRESH_MS);
+  }
+
+  /**
+   * Ungated live refresh at boot: fetch Yahoo quotes for every symbol once,
+   * apply them to the internal stocks AND rebuild the candle series anchored
+   * to the real previousClose. Runs regardless of market status so closed
+   * days settle on the true close.
+   */
+  async _seedFromLiveOnce() {
+    const symbols = [...this._stocks.keys()];
+    let quotes;
+    try {
+      quotes = await livefeed.refresh(symbols);
+      this._liveLastOk = new Date().toISOString();
+      this._liveLastErr = null;
+    } catch (e) {
+      this._liveLastErr = e.message || String(e);
+      console.warn(`[simulator] boot live seed failed: ${this._liveLastErr}`);
+      return;
+    }
+
+    let applied = 0;
+    for (const sym of symbols) {
+      const q = quotes.get(sym);
+      const s = this._stocks.get(sym);
+      if (!s || !q) continue;
+      this._applyLiveQuote(s, q);
+      // Re-anchor candles to the just-applied previousClose.
+      this._candles.set(s.symbol, buildCandlesForStock(s));
+      applied++;
+    }
+    if (applied) {
+      console.log(
+        `[simulator] boot live seed applied to ${applied}/${symbols.length} symbols at ${this._liveLastOk}`
+      );
+    }
   }
   stop() {
     if (this._timer) {

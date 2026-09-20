@@ -10,6 +10,7 @@ const path = require("path");
 const { Simulator } = require("./simulator");
 const { marketInfo } = require("../utils/market-hours");
 const { buildCandlesForStock, sliceForPeriod } = require("./candles");
+const livefeed = require("./livefeed");
 
 const sim = new Simulator({
   catalogPath: path.join(__dirname, "stock_catalog.json"),
@@ -86,11 +87,63 @@ const BANK_SYMBOLS = new Set([
 ]);
 
 const INDEX_DEFS = [
-  { symbol: "NIFTY", name: "NIFTY", base: 24500, basket: null },
-  { symbol: "NIFTY50", name: "NIFTY 50", base: 24500, basket: null },
-  { symbol: "BANKNIFTY", name: "BANK NIFTY", base: 53000, basket: BANK_SYMBOLS },
-  { symbol: "SENSEX", name: "SENSEX", base: 81000, basket: null },
+  { symbol: "NIFTY", name: "NIFTY", base: 24500, basket: null, yahoo: "^NSEI" },
+  { symbol: "NIFTYMC50", name: "NIFTY MIDCAP 50", base: 15500, basket: null, yahoo: "^NSEMDCP50" },
+  { symbol: "BANKNIFTY", name: "BANK NIFTY", base: 53000, basket: BANK_SYMBOLS, yahoo: "^NSEBANK" },
+  { symbol: "SENSEX", name: "SENSEX", base: 81000, basket: null, yahoo: "^BSESN" },
 ];
+
+// Real Yahoo index levels seeded at boot (ungated, like the stock live seed).
+// Re-anchored whenever `refreshIndices` returns data so the AI grid / detail /
+// history pages reflect the actual settled index instead of a hard-coded base.
+const _indexLiveSeed = new Map(); // symbol -> mappedQuote
+let _indexSeedStarted = false;
+
+async function _seedIndicesFromLiveOnce() {
+  if (_indexSeedStarted) return;
+  _indexSeedStarted = true;
+  const defs = INDEX_DEFS.filter((d) => d.yahoo).map((d) => ({
+    symbol: d.symbol,
+    yahoo: d.yahoo,
+  }));
+  if (defs.length === 0) return;
+  try {
+    const map = await livefeed.refreshIndices(defs);
+    let applied = 0;
+    for (const [symbol, q] of map) {
+      if (q.currentPrice != null) {
+        _indexLiveSeed.set(symbol, q);
+        applied++;
+      }
+    }
+    if (applied) {
+      console.log(
+        `[simulator.provider] boot index live seed applied to ${applied}/${defs.length} indices`
+      );
+    }
+  } catch (e) {
+    console.warn(`[simulator.provider] boot index live seed failed: ${e.message}`);
+  }
+}
+
+_seedIndicesFromLiveOnce();
+
+// Real index anchor, if the boot live seed gave us one for this symbol.
+function _liveIndexAnchor(symbol) {
+  const live = _indexLiveSeed.get(symbol);
+  if (!live) return null;
+  const prev = live.previousClose || live.currentPrice;
+  const ltp = live.currentPrice;
+  return {
+    previousClose: prev,
+    currentPrice: ltp,
+    open: live.open ?? prev,
+    dayHigh: live.dayHigh ?? Math.max(prev, ltp),
+    dayLow: live.dayLow ?? Math.min(prev, ltp),
+    yearHigh: live.yearHigh ?? Math.max(prev, ltp),
+    yearLow: live.yearLow ?? Math.min(prev, ltp),
+  };
+}
 
 function _weightedPercentChange(stocks) {
   let cap = 0;
@@ -116,9 +169,17 @@ function _weightedStatPct(stocks, pick) {
 }
 
 function _makeIndex(def, stocks) {
-  const percentChange = _weightedPercentChange(stocks);
-  const currentPrice = Math.round(def.base * (1 + percentChange / 100) * 100) / 100;
-  const level = (pct) => Math.round(def.base * (1 + pct / 100) * 100) / 100;
+  // Prefer the boot-seeded real Yahoo level when we have one; fall back to the
+  // basket-weighted synthesis so a failed live seed still produces a grid.
+  const live = _liveIndexAnchor(def.symbol);
+  const base = live ? live.previousClose : def.base;
+  const percentChange = live
+    ? (live.currentPrice / live.previousClose - 1) * 100
+    : _weightedPercentChange(stocks);
+  const currentPrice = live
+    ? live.currentPrice
+    : Math.round(def.base * (1 + percentChange / 100) * 100) / 100;
+  const level = (pct) => Math.round(base * (1 + pct / 100) * 100) / 100;
   const open = level(_weightedStatPct(stocks, (s) => s.open || s.previousClose));
   const dayHigh = Math.max(
     open,

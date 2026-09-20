@@ -162,4 +162,41 @@ async function refresh(symbols) {
   return map;
 }
 
-module.exports = { refresh, mapMetaToQuote };
+/**
+ * Refresh live quotes for index instruments. Yahoo indices use caret-prefixed
+ * symbols (^NSEI, ^NSEBANK, ^BSESN, ^NSEMDCP50, ...) that must be passed
+ * through verbatim — the `.NS` suffix logic for stocks must NOT be applied.
+ *
+ * `defs` is an array of { symbol, yahoo } — `symbol` is what our API exposes,
+ * `yahoo` is Yahoo's caret ticker. Returns Map<symbol, mappedQuote>.
+ */
+async function refreshIndices(defs) {
+  if (!Array.isArray(defs) || defs.length === 0) return new Map();
+  const results = new Array(defs.length);
+  let cursor = 0;
+  async function worker() {
+    while (cursor < defs.length) {
+      const i = cursor++;
+      const def = defs[i];
+      // Raw Yahoo caret symbol, no .NS suffix, no whitespace mangling.
+      const caret = def.yahoo.replace(/\s+/g, "");
+      try {
+        const json = await httpsGetWithFallback(PATH_TPL(caret));
+        const result = json && json.chart && json.chart.result && json.chart.result[0];
+        if (result) results[i] = mapMetaToQuote(result.meta);
+      } catch (_e) {
+        results[i] = null;
+      }
+    }
+  }
+  const workers = Array.from({ length: Math.min(CONCURRENCY, defs.length) }, worker);
+  await Promise.all(workers);
+  const map = new Map();
+  for (let i = 0; i < defs.length; i++) {
+    const r = results[i];
+    if (r && r.currentPrice != null) map.set(defs[i].symbol, r);
+  }
+  return map;
+}
+
+module.exports = { refresh, refreshIndices, mapMetaToQuote };
